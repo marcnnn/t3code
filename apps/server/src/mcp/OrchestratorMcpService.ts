@@ -301,6 +301,8 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     schedule: task.schedule,
     nextRunAt: task.nextRunAt,
     lastRunStatus: task.lastRunStatus,
+    ...(task.guardCommand === undefined ? {} : { guardCommand: task.guardCommand }),
+    ...(task.lastGuardSkip === undefined ? {} : { lastGuardSkip: task.lastGuardSkip }),
     ...(task.webhook?.url == null || !mayRun ? {} : { webhookUrl: task.webhook.url }),
     ...(task.webhook === undefined
       ? {}
@@ -1840,6 +1842,7 @@ const make = Effect.gen(function* () {
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
+        ...(input.guardCommand === undefined ? {} : { guardCommand: input.guardCommand }),
         // Scope the idempotency key by provider session so two callers
         // reusing the same clientRequestId cannot collide on one task row.
         ...(input.clientRequestId === undefined
@@ -1923,6 +1926,7 @@ const make = Effect.gen(function* () {
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
+          ...(input.guardCommand === undefined ? {} : { guardCommand: input.guardCommand }),
         };
         const { task } = yield* scheduledTasks
           .upsert(upsertInput)

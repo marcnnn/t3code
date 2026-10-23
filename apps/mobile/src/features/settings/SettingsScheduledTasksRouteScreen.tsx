@@ -148,6 +148,8 @@ function FormField(props: {
   readonly disabled?: boolean;
   readonly placeholder?: string;
   readonly borderTop?: boolean;
+  /** Commands and paths: no autocapitalize or autocorrect. */
+  readonly code?: boolean;
 }) {
   return (
     <View
@@ -165,6 +167,7 @@ function FormField(props: {
         keyboardType={props.keyboardType}
         placeholder={props.placeholder}
         placeholderTextColorClassName="accent-foreground-muted"
+        {...(props.code ? { autoCapitalize: "none", autoCorrect: false } : {})}
         className="min-h-8 font-sans text-base text-foreground"
       />
     </View>
@@ -741,6 +744,15 @@ function TaskForm({
       Dialog.alert("Project unavailable", "Choose a project in this environment.");
       return;
     }
+    const guardCommand =
+      draft.schedule.mode === "webhook" ? null : draft.guardCommand.trim() || null;
+    if (guardCommand !== null && draft.runtimeMode !== "full-access") {
+      Dialog.alert(
+        "A guard needs full access",
+        "It runs a shell command without asking, so switch the task to full access or remove it.",
+      );
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -763,6 +775,7 @@ function TaskForm({
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.task?.interactionMode ?? "default",
       creationSource: draft.task?.creationSource ?? "mobile",
+      guardCommand,
     };
     submissionPending.current = true;
     setSaving(true);
@@ -1128,6 +1141,24 @@ function TaskForm({
               ) : null}
             </>
           )}
+          {draft.schedule.mode !== "webhook" ? (
+            <>
+              <FormField
+                label="Run only if"
+                placeholder="./scripts/has-work.sh"
+                value={draft.guardCommand}
+                code
+                disabled={saving}
+                borderTop
+                onChange={(guardCommand) => setDraft({ ...draft, guardCommand })}
+              />
+              <Text className="px-4 pb-3 text-sm text-foreground-muted">
+                {
+                  "Optional shell command, run in the project folder before each timed run. Exit 0 starts the run, anything else skips it. Its output fills {{guard}} in the prompt, or {{guard.field}} when it prints JSON."
+                }
+              </Text>
+            </>
+          ) : null}
           <View className="min-h-14 flex-row items-center gap-3 border-t border-border-subtle px-4 py-3">
             <Text className="min-w-0 flex-1 text-lg text-foreground">Enabled</Text>
             <ThemedSwitch

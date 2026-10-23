@@ -26,6 +26,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ScheduledTaskGuard from "./ScheduledTaskGuard.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -210,6 +211,7 @@ it.effect(
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(ScheduledTaskGuard.ScheduledTaskGuard)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
               ),
@@ -308,6 +310,7 @@ it.effect(
                 }),
                 Layer.mock(ThreadManagementService.ThreadManagementService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(ScheduledTaskGuard.ScheduledTaskGuard)({}),
                 NodeCrypto.layer,
                 Scheduler.layer,
               ),
@@ -358,6 +361,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
               ),
           }),
           Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskGuard.ScheduledTaskGuard)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/projects",
             isScratchProject: () => Effect.succeed(false),

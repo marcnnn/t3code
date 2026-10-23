@@ -24,6 +24,7 @@ import * as Tracer from "effect/Tracer";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ScheduledTaskGuard from "./ScheduledTaskGuard.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -244,6 +245,7 @@ const withService = <A, E>(
             : Effect.succeed(value);
         },
       }),
+      Layer.mock(ScheduledTaskGuard.ScheduledTaskGuard)({}),
       Layer.succeed(
         ScheduledTaskService.ScheduledTaskWebhookOrigin,
         Effect.succeed({ relayHookBaseUrl: options.relayHookBaseUrl ?? null }),

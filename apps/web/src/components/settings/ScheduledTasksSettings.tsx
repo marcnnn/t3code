@@ -45,7 +45,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 
-import { formatRelativeTime } from "../../timestampFormat";
+import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
 import { useEnvironmentSettings } from "../../hooks/useSettings";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import {
@@ -80,7 +80,10 @@ import { SettingsGroup } from "./SettingsGroup";
 import { settingsScopeEnvironmentLabel, settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import {
   WEBHOOK_SIGNATURE_DEFAULTS,
+  guardPathQuery,
+  latestGuardSkip,
   webhookDraftErrors,
+  withGuardPath,
   webhookDeliveryLabel,
   matchesScheduledTaskScope,
   scheduleFromDraft,
@@ -108,6 +111,14 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
+import {
+  Autocomplete,
+  AutocompleteInput,
+  AutocompleteItem,
+  AutocompleteList,
+  AutocompletePopup,
+} from "../ui/autocomplete";
+import { useProjectPathSearch } from "~/state/queries";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
@@ -158,6 +169,7 @@ const EMPTY_DRAFT: DraftState = {
   coalesceWindowSeconds: "",
   filters: [],
   savedFilters: [],
+  guardCommand: "",
 };
 
 function WebhookFiltersField({
@@ -330,6 +342,68 @@ function relativeLabel(value: string | null, nowMs: number): string {
 export function ScheduledRelativeLabel(props: { value: string | null }) {
   const nowMinute = useNowMinute();
   return relativeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`));
+}
+
+const GUARD_PATH_SUGGESTION_LIMIT = 8;
+
+/**
+ * Free text, because a guard is any shell command; the word being typed is
+ * matched against the project's files, and picking one replaces that word.
+ */
+function GuardCommandField(props: {
+  readonly environmentId: EnvironmentId;
+  readonly cwd: string | null;
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const search = useProjectPathSearch(
+    {
+      environmentId: props.environmentId,
+      cwd: props.cwd,
+      query: guardPathQuery(props.value),
+      kind: "file",
+    },
+    GUARD_PATH_SUGGESTION_LIMIT,
+  );
+  const paths = search.entries.map((entry) => entry.path);
+  return (
+    <Autocomplete
+      items={paths}
+      filter={null}
+      mode="none"
+      open={open && paths.length > 0}
+      onOpenChange={setOpen}
+      value={props.value}
+      onValueChange={(value, eventDetails) =>
+        props.onChange(
+          eventDetails.reason === "item-press" ? withGuardPath(props.value, value) : value,
+        )
+      }
+    >
+      <AutocompleteInput
+        id="scheduled-task-guard"
+        placeholder="./scripts/has-work.sh"
+        spellCheck={false}
+      />
+      <AutocompletePopup>
+        <AutocompleteList className="max-h-72">
+          {paths.map((path) => (
+            <AutocompleteItem key={path} value={path}>
+              <span className="min-w-0 truncate text-sm">{path}</span>
+            </AutocompleteItem>
+          ))}
+        </AutocompleteList>
+      </AutocompletePopup>
+    </Autocomplete>
+  );
+}
+
+// A guard skip is always in the past; ScheduledRelativeLabel would read one
+// from earlier this minute as upcoming ("in under a minute").
+function PastRelativeLabel(props: { value: string }) {
+  const nowMinute = useNowMinute();
+  return formatRelativeTimeLabel(props.value, Date.parse(`${nowMinute}:00.000Z`));
 }
 
 function deliveryOutcomeVariant(outcome: string) {
@@ -680,6 +754,7 @@ function ScheduledTaskRow({
   const [busy, setBusy] = useState(false);
   const [deliveriesOpen, setDeliveriesOpen] = useState(false);
   const isWebhook = task.schedule.type === "webhook";
+  const guardSkip = latestGuardSkip(task);
   const toggle = useAtomCommand(serverEnvironment.setScheduledTaskEnabled, {
     label: "scheduled task enabled",
   });
@@ -733,6 +808,11 @@ function ScheduledTaskRow({
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
+          {guardSkip ? (
+            <span className="text-muted-foreground">
+              Skipped <PastRelativeLabel value={guardSkip.at} />: {guardSkip.reason}
+            </span>
+          ) : null}
         </div>
       }
       control={
@@ -1219,6 +1299,15 @@ function ScheduledTaskEditorForm({
       reportFailure("Invalid interval", "Enter an interval of at least one minute.");
       return;
     }
+    const guardCommand =
+      draft.scheduleMode === "webhook" ? null : draft.guardCommand.trim() || null;
+    if (guardCommand !== null && draft.runtimeMode !== "full-access") {
+      reportFailure(
+        "A guard needs full access",
+        "It runs a shell command without asking, so switch the task to full access or remove it.",
+      );
+      return;
+    }
     if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
       reportFailure("Checkout path is required", "Enter the path of the checkout to run in.");
       return;
@@ -1252,6 +1341,7 @@ function ScheduledTaskEditorForm({
       runtimeMode: draft.runtimeMode,
       interactionMode: draft.interactionMode,
       creationSource: "web",
+      guardCommand,
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
     submissionPending.current = true;
@@ -1738,6 +1828,25 @@ function ScheduledTaskEditorForm({
                 <span className="text-xs text-muted-foreground">minutes</span>
               </div>
             )}
+            {draft.scheduleMode !== "webhook" ? (
+              <Field
+                label="Run only if"
+                hint="shell command, optional"
+                htmlFor="scheduled-task-guard"
+              >
+                <GuardCommandField
+                  environmentId={environmentId}
+                  cwd={selectedProject?.workspaceRoot ?? null}
+                  value={draft.guardCommand}
+                  onChange={(guardCommand) => setDraft((current) => ({ ...current, guardCommand }))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {
+                    "Runs in the project folder before each timed run. Exit 0 starts the run, anything else skips it. Its output fills {{guard}} in the prompt, or {{guard.field}} when it prints JSON."
+                  }
+                </p>
+              </Field>
+            ) : null}
           </div>
 
           <div className="flex items-center justify-between gap-4">

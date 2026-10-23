@@ -76,6 +76,21 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+## Run only when there is work
+
+A timed task can check for work before it starts an agent. Enter a shell command
+in **Run only if**. Before each timed run, T3 Code runs it in the project folder:
+exit code 0 starts the run, any other exit code skips it until the next one, and
+the task list shows why. A skip starts no agent, so it costs no model usage.
+
+What the command prints reaches the prompt: `{{guard}}` is its whole output, and
+when it prints JSON, `{{guard.number}}` or `{{guard.issue.title}}` is one field.
+If the prompt names a field the output lacks, the run is skipped instead of
+sending a prompt with a gap.
+
+The command runs without asking, so only full-access tasks can have one. **Run
+now** skips the check, and webhook tasks use filters instead.
+
 ## Webhook automations
 
 In **Settings → Scheduled tasks**, choose **On webhook**

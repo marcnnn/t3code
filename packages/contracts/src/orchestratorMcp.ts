@@ -19,6 +19,8 @@ import {
   TurnItemId,
 } from "./baseSchemas.ts";
 import {
+  ScheduledTaskGuardCommand,
+  ScheduledTaskGuardSkip,
   ScheduledTaskRunStatus,
   ScheduledTaskSchedule,
   ScheduledTaskUpsertSchedule,
@@ -598,6 +600,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "True (default) posts each run into this thread; false creates a fresh top-level thread per run.",
     }),
   ),
+  guardCommand: Schema.optional(ScheduledTaskGuardCommand),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -612,6 +615,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   schedule: ScheduledTaskSchedule,
   nextRunAt: Schema.NullOr(IsoDateTime),
   lastRunStatus: ScheduledTaskRunStatus,
+  guardCommand: Schema.optional(Schema.String),
+  lastGuardSkip: Schema.optional(ScheduledTaskGuardSkip).annotate({
+    description: "When the guard last skipped a run, and why.",
+  }),
   webhookUrl: Schema.optional(Schema.String).annotate({
     description:
       "Public URL to give the sender. Absent when this environment has no T3 Connect managed tunnel; the user must enable T3 Connect remote access first.",
@@ -649,6 +656,9 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   schedule: Schema.optional(OrchestratorMcpSchedule),
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
+  guardCommand: Schema.optional(Schema.NullOr(ScheduledTaskGuardCommand)).annotate({
+    description: "Replace the guard, or pass null to remove it.",
+  }),
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

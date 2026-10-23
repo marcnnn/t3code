@@ -221,6 +221,21 @@ export const ScheduledTaskUpsertSchedule = Schema.Union([
 });
 export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Type;
 
+const MAX_SCHEDULED_TASK_GUARD_COMMAND_LENGTH = 4_000;
+
+export const ScheduledTaskGuardCommand = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(MAX_SCHEDULED_TASK_GUARD_COMMAND_LENGTH),
+).annotate({
+  description:
+    "Shell command run in the project folder before each timed run. Exit 0 starts the run; any other exit skips it until the next one. Its stdout fills {{guard}} in the prompt, and {{guard.path}} when stdout is JSON. Only for full-access tasks.",
+});
+
+export const ScheduledTaskGuardSkip = Schema.Struct({
+  at: IsoDateTime,
+  reason: Schema.String,
+});
+export type ScheduledTaskGuardSkip = typeof ScheduledTaskGuardSkip.Type;
+
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
@@ -253,6 +268,10 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  guardCommand: Schema.optional(ScheduledTaskGuardCommand),
+  // Separate from lastRunStatus: a skip is not a run, and clients that
+  // predate guards decode a closed status list.
+  lastGuardSkip: Schema.optional(ScheduledTaskGuardSkip),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -284,6 +303,9 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  guardCommand: Schema.optional(Schema.NullOr(ScheduledTaskGuardCommand)).annotate({
+    description: "Omit to keep the stored guard; pass null to remove it.",
+  }),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

@@ -49,10 +49,12 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as ScheduledTaskGuard from "./ScheduledTaskGuard.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 import {
   redactHeaders,
   redactQuery,
+  renderGuardPrompt,
   renderWebhookPrompt,
   type WebhookRequest,
 } from "./webhookTemplate.ts";
@@ -204,6 +206,9 @@ interface ScheduledTaskRow {
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
+  readonly guard_command: string | null;
+  readonly last_guard_skip_at: string | null;
+  readonly last_guard_skip_reason: string | null;
 }
 
 interface WebhookDeliveryRow {
@@ -348,6 +353,15 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
+      ...(row.guard_command === null ? {} : { guardCommand: row.guard_command }),
+      ...(row.last_guard_skip_at === null
+        ? {}
+        : {
+            lastGuardSkip: {
+              at: row.last_guard_skip_at,
+              reason: row.last_guard_skip_reason ?? "",
+            },
+          }),
     });
   },
   (effect, row, _origin?) =>
@@ -408,6 +422,7 @@ export const layer = Layer.effect(
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
+    const guard = yield* ScheduledTaskGuard.ScheduledTaskGuard;
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
       new Map(),
     );
@@ -456,7 +471,10 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        guard_command,
+        last_guard_skip_at,
+        last_guard_skip_reason
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -493,7 +511,10 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        guard_command,
+        last_guard_skip_at,
+        last_guard_skip_reason
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -571,7 +592,8 @@ export const layer = Layer.effect(
           last_run_error,
           run_count,
           webhook_token,
-          webhook_secret
+          webhook_secret,
+          guard_command
         )
         SELECT
           ${task.id},
@@ -595,7 +617,8 @@ export const layer = Layer.effect(
           ${task.lastRunError},
           ${task.runCount},
           ${webhook.token},
-          ${webhook.secret}
+          ${webhook.secret},
+          ${task.guardCommand ?? null}
         WHERE ${requireExisting ? 0 : 1} = 1
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
@@ -611,6 +634,7 @@ export const layer = Layer.effect(
           runtime_mode = excluded.runtime_mode,
           interaction_mode = excluded.interaction_mode,
           creation_source = excluded.creation_source,
+          guard_command = excluded.guard_command,
           updated_at = excluded.updated_at,
           next_run_at = excluded.next_run_at,
           -- Only rotate changes a live token, so a save racing a rotation
@@ -728,6 +752,59 @@ export const layer = Layer.effect(
         ),
     );
 
+    const checkGuard = Effect.fn("ScheduledTaskService.checkGuard")(function* (
+      task: ScheduledTask,
+      command: string,
+    ) {
+      const result = yield* guard.run({ projectId: task.projectId, command });
+      if (result._tag === "skip") return result;
+      const rendered = renderGuardPrompt(task.prompt, result.stdout);
+      // A prompt with a hole in it would send the agent off without the
+      // detail the guard was meant to hand over.
+      if (rendered.missing.length > 0) {
+        return {
+          _tag: "skip",
+          reason: `The guard printed no value for ${rendered.missing.map((name) => `{{${name}}}`).join(", ")}.`,
+        } as const;
+      }
+      if (rendered.prompt.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+        return { _tag: "skip", reason: PROMPT_TOO_LONG } as const;
+      }
+      return { _tag: "pass", prompt: rendered.prompt } as const;
+    });
+
+    // A skip is not a run: run state and run count stay as they were, and
+    // the clock moves on so the next occurrence asks the guard again.
+    const recordGuardSkip = Effect.fn("ScheduledTaskService.recordGuardSkip")(function* (
+      task: ScheduledTask,
+      reason: string,
+    ) {
+      const now = yield* localNow;
+      // The guard may have run for a while; follow edits made meanwhile.
+      const current = (yield* findTask(task.id)) ?? task;
+      const skipped: ScheduledTask = {
+        ...current,
+        updatedAt: iso(now),
+        nextRunAt: nextRunAt(current, now),
+        lastGuardSkip: { at: iso(now), reason },
+      };
+      yield* sql`
+        UPDATE scheduled_tasks
+        SET next_run_at = ${skipped.nextRunAt},
+            updated_at = ${skipped.updatedAt},
+            last_guard_skip_at = ${skipped.updatedAt},
+            last_guard_skip_reason = ${reason}
+        WHERE task_id = ${task.id} AND last_run_status <> 'running'
+      `.pipe(
+        Effect.mapError((cause) =>
+          taskError("Could not record a skipped schedule task run.", { taskId: task.id, cause }),
+        ),
+      );
+      yield* Effect.logInfo("Guard skipped schedule task run", { taskId: task.id, reason });
+      yield* notifyChanged;
+      return skipped;
+    });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -801,6 +878,16 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        // Only timed runs: Run now is the user asking for a run, and webhook
+        // tasks decide on receipt with filters.
+        const guarded =
+          trigger === "scheduled" && active.guardCommand !== undefined
+            ? yield* checkGuard(active, active.guardCommand)
+            : null;
+        if (guarded?._tag === "skip") {
+          return { task: yield* recordGuardSkip(active, guarded.reason), threadId: null };
+        }
+
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
           yield* sql
@@ -826,7 +913,7 @@ export const layer = Layer.effect(
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         // A webhook prompt was rendered from the row when the request arrived.
-        const prompt = webhook?.prompt ?? active.prompt;
+        const prompt = webhook?.prompt ?? guarded?.prompt ?? active.prompt;
 
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
@@ -1156,6 +1243,22 @@ export const layer = Layer.effect(
         (yield* managedFolders.isScratchProject(input.projectId))
           ? { type: "root" }
           : input.workspaceStrategy;
+      // Omitted keeps the stored guard, so clients that predate guards can
+      // re-save a task without removing it.
+      const guardCommand =
+        input.guardCommand === undefined
+          ? existingTask?.guardCommand
+          : (input.guardCommand ?? undefined);
+      if (guardCommand !== undefined && schedule.type === "webhook") {
+        return yield* taskError("Guards run before timed runs only; webhook tasks use filters.", {
+          taskId: id,
+        });
+      }
+      // The guard is a shell command that runs unattended, so it may only
+      // belong to a task whose agent could run it without approval anyway.
+      if (guardCommand !== undefined && input.runtimeMode !== "full-access") {
+        return yield* taskError("A guard needs a task with full access.", { taskId: id });
+      }
       const scheduleUnchanged =
         existingTask !== null &&
         existingTask.enabled === input.enabled &&
@@ -1183,6 +1286,7 @@ export const layer = Layer.effect(
         lastRunStatus: existingTask?.lastRunStatus ?? "never",
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
+        ...(guardCommand === undefined ? {} : { guardCommand }),
       };
       yield* saveTask(task, input.requireExisting === true, webhook);
       yield* notifyChanged;

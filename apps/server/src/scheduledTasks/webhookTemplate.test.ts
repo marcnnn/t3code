@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { SKILL_MENTION_PATTERN } from "@t3tools/shared/composerInlineTokens";
 
-import { renderWebhookPrompt, type WebhookRequest } from "./webhookTemplate.ts";
+import { renderGuardPrompt, renderWebhookPrompt, type WebhookRequest } from "./webhookTemplate.ts";
 
 const githubPullRequest: WebhookRequest = {
   method: "POST",
@@ -189,5 +189,26 @@ describe("renderWebhookPrompt", () => {
       "id",
     );
     assert.equal(rendered.prompt, "");
+  });
+});
+
+describe("renderGuardPrompt", () => {
+  it("fills guard placeholders and leaves every other brace pair as written", () => {
+    const rendered = renderGuardPrompt(
+      "Take #{{guard.number}} ({{ guard.issue.title }}). Raw: {{guard}}. Literal: {{body.x}}",
+      ' {"number":1737,"issue":{"title":"OAuth"}}\n',
+    );
+    assert.deepEqual(rendered, {
+      prompt:
+        'Take #1737 (OAuth). Raw: {"number":1737,"issue":{"title":"OAuth"}}. Literal: {{body.x}}',
+      missing: [],
+    });
+  });
+
+  it("reports fields that plain-text output cannot fill", () => {
+    assert.deepEqual(renderGuardPrompt("{{guard}} / {{guard.number}}", "ready\n"), {
+      prompt: "ready / ",
+      missing: ["guard.number"],
+    });
   });
 });

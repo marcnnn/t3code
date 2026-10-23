@@ -17,10 +17,13 @@ import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope"
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  guardPathQuery,
+  latestGuardSkip,
   scheduledTaskDefaultModel,
   matchesScheduledTaskScope,
   scheduleFromDraft,
   taskToDraft,
+  withGuardPath,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
@@ -324,4 +327,33 @@ it("rejects dedupe templates without a request placeholder", () => {
   const draft = taskToDraft({ ...legacyTask, schedule: { type: "webhook", signature: null } });
   expect(scheduleFromDraft({ ...draft, replayKey: "literal" })).toBeNull();
   expect(scheduleFromDraft({ ...draft, coalesceKey: "{{body.bad" })).toBeNull();
+});
+
+it("shows a guard skip only while it is newer than the last run", () => {
+  const skip = { at: "2026-10-24T00:05:00.000Z", reason: "The guard exited with 1." };
+  expect(latestGuardSkip({ ...legacyTask, lastGuardSkip: skip })).toEqual(skip);
+  expect(
+    latestGuardSkip({ ...legacyTask, lastGuardSkip: skip, lastRunAt: "2026-10-24T00:35:00.000Z" }),
+  ).toBeUndefined();
+  expect(
+    latestGuardSkip({ ...legacyTask, lastGuardSkip: skip, lastRunAt: "2026-10-23T23:35:00.000Z" }),
+  ).toEqual(skip);
+});
+
+it("opens a task's guard in the form", () => {
+  expect(taskToDraft({ ...legacyTask, guardCommand: "./has-work.sh" }).guardCommand).toBe(
+    "./has-work.sh",
+  );
+  expect(taskToDraft(legacyTask).guardCommand).toBe("");
+});
+
+it("completes the word being typed in a guard command with a project file", () => {
+  expect(guardPathQuery("python3 scripts/bo")).toBe("scripts/bo");
+  expect(guardPathQuery("./has")).toBe("has");
+  expect(guardPathQuery("python3 board.py ")).toBe("");
+  expect(withGuardPath("python3 scripts/bo", "scripts/board.py")).toBe(
+    "python3 ./scripts/board.py",
+  );
+  expect(withGuardPath("", "has-work.sh")).toBe("./has-work.sh");
+  expect(withGuardPath("a && ./ha", "has-work.sh")).toBe("a && ./has-work.sh");
 });

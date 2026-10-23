@@ -79,6 +79,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ScheduledTaskGuard from "../scheduledTasks/ScheduledTaskGuard.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -309,6 +310,7 @@ const layerScheduledTasksTest = ScheduledTaskService.layer.pipe(
       Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
       Layer.mock(ThreadManagementService.ThreadManagementService)({}),
       Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.mock(ScheduledTaskGuard.ScheduledTaskGuard)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),

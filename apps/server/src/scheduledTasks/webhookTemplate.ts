@@ -195,3 +195,39 @@ export function renderWebhookPrompt(
     missing,
   };
 }
+
+/**
+ * Fills `{{guard}}` with a guard command's trimmed stdout and `{{guard.path}}`
+ * with fields of that stdout parsed as JSON. Other placeholders stay as
+ * written: a timed task's prompt never had them, so they are literal text.
+ * The guard is the user's own command, so its output is not framed as
+ * untrusted data.
+ */
+export function renderGuardPrompt(template: string, stdout: string): RenderedWebhookPrompt {
+  const missing: string[] = [];
+  const text = stdout.trim();
+  let parsed: { value: unknown } | undefined;
+  const json = () => {
+    if (parsed === undefined) {
+      try {
+        parsed = { value: JSON.parse(text) as unknown };
+      } catch {
+        parsed = { value: undefined };
+      }
+    }
+    return parsed.value;
+  };
+  const prompt = template.replace(PLACEHOLDER, (match, rawExpression: string) => {
+    const expression = rawExpression.trim();
+    const [root, ...segments] = expression.split(".");
+    if (root !== "guard") return match;
+    const value = segments.length === 0 ? text : lookup(json(), segments);
+    const rendered = value === undefined || value === null ? undefined : stringify(value);
+    if (rendered === undefined || rendered === "") {
+      if (!missing.includes(expression)) missing.push(expression);
+      return "";
+    }
+    return rendered;
+  });
+  return { prompt, missing };
+}

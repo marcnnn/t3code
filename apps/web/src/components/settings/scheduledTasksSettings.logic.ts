@@ -91,6 +91,7 @@ export interface DraftState {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   /** The filter rows the form opened with. */
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
+  readonly guardCommand: string;
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -252,7 +253,17 @@ export function taskToDraft(task: ScheduledTask): DraftState {
         : "",
     filters,
     savedFilters: filters,
+    guardCommand: task.guardCommand ?? "",
   };
+}
+
+/** The guard's last skip, when it came after the last run and so is the latest news. */
+export function latestGuardSkip(task: ScheduledTask): ScheduledTask["lastGuardSkip"] {
+  const skip = task.lastGuardSkip;
+  if (skip === undefined) return undefined;
+  return task.lastRunAt === null || Date.parse(skip.at) > Date.parse(task.lastRunAt)
+    ? skip
+    : undefined;
 }
 
 export function scheduledTaskDefaultModel(
@@ -287,4 +298,17 @@ export function scheduledTaskDefaultModel(
   );
   const fallback = models.find(({ model }) => model.isDefault) ?? models[0];
   return fallback ? { instanceId: fallback.instanceId, model: fallback.model.slug } : null;
+}
+
+/** The word being typed at the end of a guard command, searched as a project path. */
+export function guardPathQuery(command: string): string {
+  return (/\S*$/.exec(command)?.[0] ?? "").replace(/^\.\//, "");
+}
+
+/**
+ * Replaces that last word with the picked file. `./` keeps a bare script name
+ * runnable, since the project folder is not on the guard's PATH.
+ */
+export function withGuardPath(command: string, path: string): string {
+  return command.replace(/\S*$/, `./${path}`);
 }
